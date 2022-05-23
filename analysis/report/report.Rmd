@@ -11,6 +11,9 @@ date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: 
     html_document
 bibliography: references.bib
+params:
+  gather_raw_data: FALSE
+  date: "2022-01-01"
 ---
 
 <!-- The following code chunk defines some general settings how code chunks should behave. -->
@@ -31,9 +34,77 @@ knitr::opts_chunk$set(
 
 # Introduction
 
-<!-- do last -->
+<!-- do last then update description and upload to github -->
 
 # Comparison of Estimates
+
+```{r load Economist}
+econ_raw_file_path <- file.path(here::here(), "analysis/data/raw_data/economist_raw.csv")
+if(params$gather_raw_data){
+  #save to the raw_data_folder
+  download.file("https://raw.githubusercontent.com/TheEconomist/covid-19-the-economist-global-excess-deaths-model/baca4ff7f77b031de8e1b0f5f73eaf1ca8e50998/output-data/export_country.csv", econ_raw_file_path)
+}
+#load raw version from data_raw
+econ_df <- read_csv(econ_raw_file_path)
+#process to get what we need, date + iso3c + combined median & true value
+econ_df <- econ_df %>% 
+  mutate(economist_estimated = is.na(daily_excess_deaths)) %>% 
+  select(date, iso3c, estimated_daily_excess_deaths, economist_estimated) %>% 
+  rename(economist_excess_deaths = estimated_daily_excess_deaths)
+```
+
+```{r load WHO}
+who_raw_file_path <- file.path(here::here(), "analysis/data/raw_data/who_raw.zip")
+if(params$gather_raw_data){
+  #save to the raw_data_folder
+  download.file("https://cdn.who.int/media/docs/default-source/world-health-data-platform/covid-19-excessmortality/2022-03-25_covid-19_gem.zip", who_raw_file_path)
+}
+#extract files
+unzip(who_raw_file_path, "WHO_COVID_Excess_Deaths_EstimatesByCountry.xlsx", exdir = here::here("temp"))
+#load raw version from unzipped
+who_df <- read_xlsx(here::here("temp/WHO_COVID_Excess_Deaths_EstimatesByCountry.xlsx"),
+                    sheet = "Country by year and month", skip = 12)
+#remove temp folder
+unlink(here::here("temp"), force = TRUE, recursive = TRUE)
+#process to get what we need, date + iso3c + excess
+who_df <- who_df %>% 
+  mutate(who_estimated = type == "Predicted",
+         date = as.Date.character(paste0(as.character(year), "-", as.character(month), "-01"))) %>% 
+  select(date, iso3, excess.mean, who_estimated) %>% 
+  rename(iso3c = iso3, who_excess_deaths = excess.mean)
+```
+
+```{r combine WHO ECON}
+#they are in different formats atm so we will convert economist into monthly
+econ_df <- econ_df %>% 
+  group_by(iso3c) %>% 
+  arrange(iso3c, date) %>% 
+  #assume daily econo estimate date is the middel date for the week
+  #first get the first day of the week for that date
+  mutate(week_start_date = floor_date(date, "week"),
+         #only update this there's a whole week between, this way we still apply the final estimate
+         date = if_else(diff(c(min(week_start_date) - 7, week_start_date)) == 7,
+                        week_start_date, date)) %>% 
+  complete(date = seq(min(date), max(week_start_date) + 7, 1)) %>% 
+  fill(economist_excess_deaths, economist_estimated, .direction = "down") %>% 
+  #now group into months
+  mutate(month = month(date),
+         year = year(date)) %>% 
+  group_by(iso3c, year, month) %>% 
+  summarise(economist_excess_deaths = sum(economist_excess_deaths),
+            economist_estimated = any(economist_estimated),
+            date = min(date), .groups = "drop") %>% 
+  select(!c(month, year)) %>% 
+  filter(date != "2019-12-29")
+#now only keep countries in both
+in_both <- intersect(econ_df$iso3c, who_df$iso3c)
+combined_df <- econ_df %>% 
+  filter(iso3c %in% in_both & date < params$date) %>% 
+  full_join(
+    who_df %>% 
+      filter(iso3c %in% in_both & date < params$date)
+  )
+```
 
 # Impact on Deaths Averted
 
