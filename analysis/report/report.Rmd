@@ -1,0 +1,68 @@
+---
+title: "WHO and The Economist Excess Mortality Comparison"
+author:
+  - Greg Barnsley:
+      email: g.barnsley@imperial.ac.uk
+      institute: [ICL]
+      correspondence: true
+institute:
+  - ICL: Imperial College London
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+    html_document
+bibliography: references.bib
+---
+
+<!-- The following code chunk defines some general settings how code chunks should behave. -->
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  echo = FALSE,
+  comment = "#>",
+  fig.path = "../figures/",
+  dpi = 300
+)
+```
+
+<!-- The actual document text starts here: -->
+
+# Introduction
+
+<!-- do last -->
+
+# Comparison of Estimates
+
+# Impact on Deaths Averted
+
+# Conclusion
+
+\newpage
+
+# References 
+
+<!-- The following line ensures the references appear here for the MS Word or HTML output files, rather than right at the end of the document (this will not work for PDF files):  -->
+
+<div id="refs"></div>
+
+\newpage
+
+### Colophon
+
+<!-- Add something about renv output? -->
+
+This report was generated on `r Sys.time()` using the following computational environment and dependencies: 
+
+```{r colophon, cache = FALSE}
+# which R packages and versions?
+if ("devtools" %in% installed.packages()) devtools::session_info()
+```
+
+The current Git commit details are:
+
+```{r}
+# what commit is this file at? 
+if ("git2r" %in% installed.packages() & git2r::in_repository(path = ".")) git2r::repository(here::here())  
+```
