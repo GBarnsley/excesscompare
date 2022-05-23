@@ -1,3 +1,5 @@
+^renv$
+^renv\.lock$
 ^excesscompare\.Rproj$
 ^\.Rproj\.user$
 ^LICENSE\.md$
@@ -6,3 +8,4 @@
 ^CONDUCT\.md$
 ^CONTRIBUTING\.md$
 analysis
+meta
