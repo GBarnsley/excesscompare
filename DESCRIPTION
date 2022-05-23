@@ -1,9 +1,11 @@
 Package: excesscompare
-Title: What the Package Does (One Line, Title Case)
+Title: Comparison of the WHO and Economist COVID-19 Excess Mortality Estimates
 Version: 0.0.0.9000
 Authors@R:
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
+    person("Gregory", "Barnsley", "g.barnsley@imperial.ac.uk", role = c("aut", "cre"))
+Description: Compare the estimated excess moratlity between the WHO and the
+  Economist. Will potentially compare others. This comparison will allow us
+  to esimate vaccine impact based upon the WHO estimates. 
 License: MIT + file LICENSE
 ByteCompile: true
 Encoding: UTF-8
