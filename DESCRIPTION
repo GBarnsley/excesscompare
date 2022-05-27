@@ -17,6 +17,11 @@ Imports: bookdown,
     renv,
     tidyverse,
     readxl,
-    lubridate
+    lubridate,
+    squire,
+    countrycode,
+    nlme,
+    ggpubr,
+    agtboost
 Suggests: devtools,
     git2r
