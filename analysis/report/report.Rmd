@@ -1,5 +1,5 @@
 ---
-title: "WHO and The Economist Excess Mortality Comparison"
+title: "Comparison of WHO and The Economist Excess Mortality impact on vaccine deaths averted"
 author:
   - Greg Barnsley:
       email: g.barnsley@imperial.ac.uk
@@ -9,12 +9,12 @@ institute:
   - ICL: Imperial College London
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: 
-    html_document
+    word_document
 bibliography: references.bib
 params:
   gather_raw_data: FALSE
-  parallel_: TRUE
-  generate_model_fits: TRUE #TEMP: redo wit full later
+  parallel_: FALSE
+  generate_model_fits: FALSE
 ---
 
 <!-- The following code chunk defines some general settings how code chunks should behave. -->
@@ -343,46 +343,162 @@ deaths_averted <- readRDS(here::here("analysis/data/raw_data/excess_mortality.Rd
   filter(!is.na(date)) %>% 
   filter(date > "2019-12-31") %>%
   mutate(date = floor_date(date, "month")) %>%  #ensure this is in terms of whole months
+  #drop ones with no vaccinations (i.e. no deaths averted)
+  group_by(iso3c) %>% 
+  filter(sum(deaths_averted) != 0) %>% 
   group_by(iso3c, date, type)
 ```
 
 ```{r get vaccine data}
 #Raw data unavailable from Unicef dashboard https://www.unicef.org/supply/covid-19-vaccine-market-dashboard
-dominant_vaccines <- readRDS(here::here("analysis/data/raw_data/dominant_vaccines.Rds"))
-#clean up a bit
-dominant_vaccines <- dominant_vaccines %>% 
+simplify_vaccines <- function(x){
+  case_when(
+      x %in% c("Pfizer/BioNTech", "Moderna") ~ "mRNA",
+      x %in% c("Abdala", "Novavax", "ZF2001", "Soberana02", "Soberana Plus", "Razi Cov Pars", "SpikoGen", "EpiVacCorona", "Medigen", "Abdala (Subunit like novavax)", "Anhui ZL (Recombinant Platform)") ~ "Subunit",
+      x %in% c("Oxford/AstraZeneca", "Sputnik V", "Sputnik Light", "CanSino", "Covishield") ~ "Adenovirus",
+      x %in% c("Sinopharm/Wuhan", "Sinopharm/Beijing", "Sinovac", "Covaxin", "COVIran Barekat", "FAKHRAVAC", "QazVac", "Turkovac", "KoviVac/Chumakov") ~ "Whole Virus",
+      TRUE ~ x,
+    )
+}
+dominant_vaccines <- readRDS(here::here("analysis/data/raw_data/dominant_vaccines.Rds"))%>% 
   transmute(
     iso3c = countrycode::countrycode(country, "country.name", "iso3c"),
     #reduce to types
-    dominant_vaccine = case_when(
-      dominant %in% c("Pfizer/BioNTech", "Moderna") ~ "mRNA",
-      dominant %in% c("Abdala", "Novavax", "ZF2001", "Soberana02", "Soberana Plus", "Razi Cov Pars", "SpikoGen", "EpiVacCorona", "Medigen", "Abdala (Subunit like novavax)", "Anhui ZL (Recombinant Platform)") ~ "Subunit",
-      dominant %in% c("Oxford/AstraZeneca", "Sputnik V", "Sputnik Light", "CanSino", "Covishield") ~ "Adenovirus",
-      dominant %in% c("Sinopharm/Wuhan", "Sinopharm/Beijing", "Sinovac", "Covaxin", "COVIran Barekat", "FAKHRAVAC", "QazVac", "Turkovac") ~ "Whole Virus",
-      TRUE ~ dominant,
+    dominant_vaccine = simplify_vaccines(dominant)
+  )
+if(params$gather_raw_data){
+  url <- xml2::read_html("https://github.com/owid/covid-19-data/tree/master/public/data/vaccinations/country_data")
+  ctries <- rvest::html_text(rvest::html_nodes(url, ".js-navigation-open.Link--primary"))
+  links <- paste0("https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/vaccinations/country_data/", ctries)
+  links <- urltools::url_encode(links)
+  dat <- lapply(links, read.csv)
+  present_vaccines <- data.frame("country" = gsub(".csv","", ctries, fixed = TRUE),
+                 "vaccines" = unlist(lapply(dat, function(x){tail(x$vaccine,1)}))) %>%
+    mutate(
+      country = case_when(
+        country %in% c("England", "Northern Ireland", "Scotland", "Wales") ~ "United Kingdom",
+        country == "Timor" ~ "Timor Leste",
+        TRUE ~ country
+      ),
+      country = if_else(
+        country == "Kosovo",
+        "XKX",
+        countrycode::countrycode(country, origin = "country.name", destination = "iso3c")
+      )
+    ) %>%
+    filter(country %in% dominant_vaccines$iso3c) %>%
+    rename(iso3c = country) %>%
+    unique() %>%
+    group_by(iso3c) %>%
+    summarise(
+      vaccines = paste0(vaccines, collapse = ", ")
+    )
+  saveRDS(present_vaccines, here::here("analysis/data/raw_data/owid_vaccine_usage.Rds"))
+  rm(url, ctries, links, dat)
+} else {
+  present_vaccines <- readRDS(here::here("analysis/data/raw_data/owid_vaccine_usage.Rds"))
+}
+#add missing values
+present_vaccines <- present_vaccines %>%
+  rbind(
+    tibble(
+      iso3c = c("GUF", "GLP", "MTQ", "MYT", "REU"),
+      vaccines = present_vaccines %>%
+        filter(iso3c == "FRA") %>%
+        pull(vaccines)
+    )
+  ) %>%
+  rbind(
+    vaccines = present_vaccines %>%
+      filter(iso3c == "GBR") %>%
+      mutate(iso3c = "CHI")
+  ) %>%
+  rbind(
+    tibble(
+      iso3c = c("GUM", "FSM", "PRI", "VIR"),
+      vaccines = c("Pfizer/BioNTech, Moderna, Johnson&Johnson",
+                   "Moderna, Johnson&Johnson",
+                   "Pfizer/BioNTech, Moderna, Johnson&Johnson",
+                   "Pfizer/BioNTech, Moderna")
     )
   )
+
+#split into distinct categories
+vaccine_types <- unique(unlist(str_split(unique(present_vaccines$vaccines), ", ")))
+#simplify to types
+vaccine_cat <- simplify_vaccines(vaccine_types)
+unique_cat <- unique(vaccine_cat)
+names(unique_cat) <- unique_cat
+#reduce
+present_vaccines <- present_vaccines %>%
+  select(!vaccines) %>%
+  cbind(
+    map_dfc(unique_cat, function(category){
+      reduce(vaccine_types[vaccine_cat == category],
+             function(curr, new_vaccine_type){
+               curr + str_detect(present_vaccines$vaccines, new_vaccine_type) > 0
+             },
+             .init = FALSE
+      )
+    })
+  )
+rm(vaccine_types, vaccine_cat, unique_cat)
+
+#Also load when variant timings start, no source available generated when model
+#fitted to covariants data
+variant_timings <- readRDS(here::here("analysis/data/raw_data/variant_characteristics.rds")) %>% 
+  map_dfr(function(country) map_dfc(country, ~.x$start_date), .id = "iso3c") %>% 
+  transmute(
+    iso3c = iso3c,
+    across(!iso3c,
+           ~as.numeric(.x),
+           .names = "start_date_{col}")
+  )
+
+#start_date of epidemic (rough for now)
+epidemic_start_dates <- deaths_averted %>% 
+  group_by(iso3c, replicate, type) %>% 
+  filter(deaths > 0) %>% 
+  summarise(
+    start_date_epidemic = as.numeric(min(date)),
+    .groups = "drop"
+  )
+
+#well assume this is the first non zero deaths averted in any replicate/type of fit
+vaccination_start_dates <- deaths_averted %>% 
+  group_by(iso3c) %>% 
+  filter(deaths_averted > 0) %>% 
+  summarise(start_date_vaccination = min(date))
+
+#again no source, based on formattted OWID data
+vaccinations_total <- readRDS(here::here("analysis/data/raw_data/vacc_inputs.rds")) %>% 
+  map_dfr(~tibble(first_doses = sum(.x$max_vaccine), second_doses = tail(.x$dose_ratio, 1)*sum(.x$max_vaccine)), .id = "iso3c")
 ```
 
 
 ```{r fit lme to excess}
 set.seed(100100)
 #determine the first date of deaths averted in any type, i.e. when vaccination starts,
-#this keeps the numeric month consistent across types
-initial_dates <- deaths_averted %>% 
-  group_by(iso3c) %>% 
-  filter(deaths_averted > 0) %>% 
-  summarise(initial_date = min(date))
-#add a numeric month variabl
-fitting_data <- deaths_averted %>%
+#we'll use this to get deaths over vaccination period, and deaths non vaccine period
+#main issue cannot capture variation in VE very well
+
+age_baseline_ifr <- nimue:::default_probs()$prob_hosp * 
+        (nimue:::default_probs()$prob_severe * nimue:::default_probs()$prob_severe_death_treatment + 
+        (1-nimue:::default_probs()$prob_severe) * nimue:::default_probs()$prob_non_severe_death_treatment)
+##used to calculate the baseline IFR for the demographic
+
+fitting_data <- deaths_averted %>% 
   group_by(iso3c, replicate, type) %>% 
-  left_join(initial_dates, by = "iso3c") %>% 
-  filter(date >= initial_date) %>% 
-  mutate(month = interval(initial_date, date) %/% months(1)) %>% 
-  select(!initial_date) %>% 
-  # arrange(iso3c, replicate, type, date) %>% 
-  # mutate(month = seq_along(date)) %>% 
-  #add extra data
+  left_join(vaccination_start_dates, by = "iso3c") %>%
+  mutate(vaccine_period = date >= start_date_vaccination) %>%
+  #summarise to get totals
+  summarise(deaths_averted = sum(deaths_averted),
+            deaths_vaccine = sum(deaths[vaccine_period]),
+            deaths_non_vaccine = sum(deaths[!vaccine_period]),
+            start_date_vaccination = as.numeric(start_date_vaccination[1]),
+            .groups = "drop") %>% 
+  #add extra data:
+  #population
   left_join(
     squire::population %>% 
       group_by(iso3c) %>% 
@@ -390,6 +506,15 @@ fitting_data <- deaths_averted %>%
     by = "iso3c"
   ) %>% 
   group_by(iso3c) %>%
+  #IFR at t0
+  mutate(
+    baseline_ifr =
+       weighted.mean(
+        age_baseline_ifr,
+        squire::population[squire::population$iso3c == iso3c[1],"n"]
+       )
+  ) %>% 
+  #hopsital and ICU capacity
   mutate(
     hosp_beds = squire::get_healthcare_capacity(
       squire::population$country[squire::population$iso3c == iso3c[1]][1]
@@ -399,6 +524,7 @@ fitting_data <- deaths_averted %>%
     )$ICU_beds
   ) %>% 
   ungroup() %>% 
+  #Regions
   mutate(
     income_group = squire.page:::get_income_group(iso3c),
     who_region = squire.page:::get_WHO_region(iso3c)
@@ -408,18 +534,23 @@ fitting_data <- deaths_averted %>%
   mutate(
     dominant_vaccine = if_else(is.na(dominant_vaccine), "Missing", dominant_vaccine)
   ) %>% 
+  left_join(present_vaccines, by = "iso3c") %>%
+  #epidemic and variant start dates
+  left_join(variant_timings, by = "iso3c") %>%
+  left_join(epidemic_start_dates, by = c("iso3c", "replicate", "type")) %>%
+  #vaccination counts
+  left_join(vaccinations_total, by = "iso3c") %>% 
   #make per capita
-  mutate(deaths_averted = deaths_averted/pop,
-         deaths = deaths/pop)
-
-#TEMP reduce for speed
-fitting_data <- fitting_data %>% 
-  group_by(iso3c, type) %>% 
-  filter(replicate %in% sample(unique(replicate), 20)) %>% 
-  ungroup()
+  mutate(across(
+    c(deaths_averted, deaths_vaccine, deaths_non_vaccine, first_doses, second_doses),
+    ~.x/pop)
+    )
 
 #scale standardise variables (potentially standardise in each country?)
-normal_vars <- c("deaths_averted", "deaths", "hosp_beds", "ICU_beds")
+normal_vars <- c("deaths_averted", "deaths_vaccine", "deaths_non_vaccine", 
+                 "hosp_beds", "ICU_beds", "baseline_ifr", "start_date_vaccination",
+                 "start_date_Delta", "start_date_Omicron", "start_date_epidemic",
+                 "first_doses", "second_doses")
 means <- fitting_data %>% 
   ungroup() %>% 
   summarise(
@@ -437,8 +568,13 @@ standardise_df <- function(data){
   force(normal_vars)
   force(means)
   force(vars)
-  names(normal_vars) <- paste0(normal_vars, "_standardised")
-data <- data %>% cbind(map_dfc(normal_vars, function(variable){
+  names(normal_vars) <- normal_vars
+  data <- data %>%
+    mutate(across(all_of(normal_vars),
+                ~.x,
+                .names = "{.col}_original")) %>%
+    select(!all_of(normal_vars)) %>% 
+    cbind(map_dfc(normal_vars, function(variable){
   (data[[variable]] - means[[variable]])/sqrt(vars[[variable]])
 }))
 }
@@ -450,7 +586,7 @@ unstandardise_deaths_averted <- function(x){
 fitting_data <- standardise_df(fitting_data)
 
 #evalute performance via cross validation
-N_valid <- 5
+N_valid <- 10
 #split the reported deaths and excess equally and ensure groups are equal sizes
 partioned_data <- fitting_data %>% 
   ungroup() %>% 
@@ -474,7 +610,7 @@ partioned_data <- fitting_data %>%
   )
 
 if(params$parallel_){
-    future::plan(future::multisession(workers = 5))
+    future::plan(future::multisession())
   map_func <- function(.x, .f){
     furrr::future_map(.x, .f)
   }
@@ -489,103 +625,111 @@ error_func <- function(target, prediction){
   sqrt(sum((target - prediction)^2))
 }
 
+tuning_parameters <- expand_grid(
+  include_iso3c = FALSE,
+  learning_rate = c(0.1, 0.01, 0.001),
+  WHO = c(TRUE, FALSE),
+  daily_deaths = c(TRUE, FALSE)
+) %>% transpose()
+
+generate_formula <- function(include_iso3c, WHO){
+  temp_df <- fitting_data[1:2,]
+  remove_vars <- c("pop", "replicate", "type")
+  if(!include_iso3c){
+    remove_vars <- c(remove_vars, "iso3c")
+  }
+  if(!WHO){
+    remove_vars <- c(remove_vars, "who_region")
+  }
+  DF2formula(temp_df %>% select(!any_of(remove_vars)) %>% 
+               select(!contains("_original")) %>% 
+               #set target to be at the front
+               relocate(deaths_averted))
+}
 
 errors <- map_func(seq_len(N_valid), function(test_index){
   train <- partioned_data %>% filter(group == test_index)
   test <- partioned_data %>% filter(group != test_index & iso3c %in% train$iso3c) #remove countries we've not trained on
   
   if(params$generate_model_fits){
-    fit_lme <- nlme::lme(fixed = formula(deaths_averted_standardised ~
-                                   deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised + 
-                                     as.character(month)
-        ),
-      random = formula(~month + 1|iso3c), #note if more than two types in df add this as a nested random effect
-      correlation = nlme::corAR1(form = ~month|iso3c/type/replicate),
-      data = train)
-    fit_agt <- agtboost::gbt.train(
-      y = train$deaths_averted_standardised,
-      x = model.matrix(~ month + deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised + hosp_beds_standardised - 1, train),
-    verbose = 100, learning_rate = 0.0005
+    fits <- map_func(tuning_parameters, function(tuning_params){
+      if(tuning_params$daily_deaths){
+        train <- train %>% 
+          mutate(deaths_non_vaccine = deaths_non_vaccine/(start_date_vaccination_original - start_date_epidemic_original),
+                 deaths_vaccine = deaths_vaccine/(as.numeric(as.Date("2021-12-08")) - start_date_vaccination_original)
+          )
+      }
+      agtboost::gbt.train(
+        y = train$deaths_averted,
+        x = model.matrix(generate_formula(tuning_params$include_iso3c, tuning_params$WHO), train), learning_rate = tuning_params$learning_rate
+      )
+    })
+    #save files
+    walk(
+      seq_along(tuning_parameters), ~agtboost::gbt.save(
+        fits[[.x]],
+        here::here(paste0("analysis/data/derived_data/fits/agt_", paste0(names(tuning_parameters[[.x]]), collapse = "_"), ".agtb"))
+        )
     )
-    saveRDS(fit_lme, here::here(paste0("analysis/data/derived_data/fits/lme_", test_index, ".Rds")))
-    agtboost::gbt.save(fit_agt, here::here(paste0("analysis/data/derived_data/fits/agt_", test_index, ".agtb")))
   } else {
-    fit_lme <- readRDS(here::here(paste0("analysis/data/derived_data/fits/lme_", test_index, ".Rds")))
-    fit_agt <- agtboost::gbt.load(here::here(paste0("analysis/data/derived_data/fits/agt_", test_index, ".agtb")))
+    fits <- map(
+      seq_along(tuning_parameters), ~agtboost::gbt.load(
+        here::here(paste0("analysis/data/derived_data/fits/agt_", paste0(names(tuning_parameters[[.x]]), collapse = "_"), ".agtb"))
+        )
+    )
   }
   
   #generate predictions
-  predicted_agt <- predict(fit_agt, model.matrix(~ month + deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised - 1, test))
-  predicted_lme <- predict(fit_lme, test, level = 1)
-  
-  #calculate training errors
-  t_error_agt <- error_func(train$deaths_averted_standardised, predict(fit_agt, model.matrix(~ month + deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised - 1, train)))
-  t_error_lme <- error_func(train$deaths_averted_standardised, predict(fit_lme, train, level = 1))
+  predicted_agt <- map(seq_along(fits), function(x){
+      if(tuning_parameters[[x]]$daily_deaths){
+        test <- test %>% 
+          mutate(deaths_non_vaccine = deaths_non_vaccine/(start_date_vaccination_original - start_date_epidemic_original),
+                 deaths_vaccine = deaths_vaccine/(as.numeric(as.Date("2021-12-08")) - start_date_vaccination_original)
+          )
+      }
+    predict(fits[[x]], model.matrix(generate_formula(tuning_parameters[[x]]$include_iso3c, tuning_parameters[[x]]$WHO), test))
+  })
   
   #remove to save on RAM
-  rm(fit_lme)
-  rm(fit_agt)
-  
-  #calculate composite measure
-  predicted_composite <- map_dbl(seq_along(predicted_agt),
-                                 ~weighted.mean(c(predicted_agt[.x], predicted_lme[.x]), w = 1/c(t_error_agt, t_error_lme)))
+  rm(fits)
   
   #unstandardise
-  predicted_agt <- unstandardise_deaths_averted(predicted_agt)
-  predicted_lme <- unstandardise_deaths_averted(predicted_lme)
-  predicted_composite <- unstandardise_deaths_averted(predicted_composite)
+  predicted_agt <- map(predicted_agt, ~unstandardise_deaths_averted(.x))
   
-  error_agt <- error_func(test$deaths_averted, predicted_agt)
-  error_lme <- error_func(test$deaths_averted, predicted_lme)
-  error_composite <- error_func(test$deaths_averted, predicted_composite)
+  error_agt <- map(predicted_agt, ~error_func(test$deaths_averted_original, .x))
   
-  plot <- ggplot(test %>% 
-                   ungroup() %>% 
-                   mutate(
-                    predicted = predicted_lme,
-                    `Model: ` = "lme"
-                   ) %>% 
-                   rbind(
-                     test %>%
-                      ungroup() %>%
-                      mutate(
-                        predicted = predicted_agt,
-                        `Model: ` = "agtboost"
-                      )
-                   ) %>%
-                   rbind(
-                     test %>%
-                      ungroup() %>%
-                      mutate(
-                        predicted = predicted_composite,
-                        `Model: ` = "composite"
-                      )
-                   )
+  plot <- ggplot(
+    map_dfr(seq_along(predicted_agt), ~test %>% 
+              ungroup() %>% 
+              mutate(
+      predicted = predicted_agt[[.x]],
+      parameters = paste0(paste0(names(tuning_parameters[[.x]]), ": ", unlist(tuning_parameters[[.x]])), collapse = ", ")
+    ))
   ) + 
     geom_abline(aes(slope = 1, intercept = 0), alpha = 0.5, linetype = "dashed") + 
-    geom_point(aes(x = .data$predicted, y = .data$deaths_averted, colour = .data$type),
+    geom_point(aes(x = .data$predicted, y = .data$deaths_averted_original, colour = .data$type),
                alpha = 0.5) + 
     ggpubr::theme_pubr() + 
-    facet_wrap(dplyr::vars( `Model: `), ncol =  1) +
+    facet_wrap(vars(parameters)) +
     labs(x= "Predicted", y = "Truth", colour = "Type:", title = paste0("Validation Set: ", test_index))
   #calculate error
-  list(plot = plot, error_agt = error_agt, 
-       error_lme = error_lme, error_composite = error_composite)
+  list(plot = plot, errors = error_agt)
 })
 
 rm(partioned_data)
 
 #fitting plots
-pdf(here::here("analysis/figures/S01_cross-validation-fits.pdf"))
+pdf(here::here("analysis/figures/S01_cross-validation-fits_2.pdf"))
 for(fold in errors){
   print(fold$plot)
 }
 rm(fold)
 dev.off()
-#calculate errors
-models <- c("agt", "lme", "composite")
-errors <- map_dbl(paste0("error_", models), function(model) mean(map_dbl(errors, ~.x[[model]])))
-optimal_model <- models[which.min(errors)]
+#get the best set of tuning parameters
+errs <- map_dbl(seq_along(tuning_parameters), function(it) mean(map_dbl(errors, ~.x$errors[[it]])))
+best_params <- tuning_parameters[[which.min(errs)]]
+
+agt_formula <- generate_formula(best_params$include_iso3c, best_params$WHO)
 
 if(params$parallel_){
   future::plan(future::sequential)
@@ -594,95 +738,84 @@ if(params$parallel_){
 
 ```{r train chosen model}
 #fit agt
-if(optimal_model %in% c("agt", "composite")){
-  if(params$generate_model_fits){
-    fit_agt <- agtboost::gbt.train(
-      y = fitting_data$deaths_averted_standardised,
-      x = model.matrix(~ month + deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised - 1, fitting_data),
-      verbose = 100, learning_rate = 0.0005
-    )
-    agtboost::gbt.save(fit_agt, here::here("analysis/data/derived_data/fits/agt.agtb"))
-  } else {
-    fit_agt <- agtboost::gbt.load(here::here("analysis/data/derived_data/fits/agt.agtb"))
-  }
-  predict_agt <- function(data){
-    force(fit_agt)
-    predict(fit_agt, model.matrix(~ month + deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised - 1, data))
-  }
-  if(optimal_model == "agt"){
-    fitted_model <- function(data){
-      force(predict_agt)
-      predict_agt(data)
-    }
-  }
+if(params$generate_model_fits){
+  fit_agt <- agtboost::gbt.train(
+    y = fitting_data$deaths_averted,
+    x = model.matrix(agt_formula, fitting_data),
+    verbose = 100, learning_rate = best_params$learning_rate
+  )
+  agtboost::gbt.save(fit_agt, here::here("analysis/data/derived_data/fits/agt.agtb"))
+} else {
+  fit_agt <- agtboost::gbt.load(here::here("analysis/data/derived_data/fits/agt.agtb"))
 }
-
-if(optimal_model %in% c("lme", "composite")){
-  if(params$generate_model_fits){
-    fit_lme <- nlme::lme(fixed = formula(deaths_averted_standardised ~
-                                   deaths_standardised + income_group + who_region + dominant_vaccine + ICU_beds_standardised + as.character(month)
-        ),
-      random = formula(~month + 1|iso3c), #note if more than two types in df add this as a nested random effect
-      correlation = nlme::corAR1(form = ~month|iso3c/type/replicate),
-      data = fitting_data)
-    saveRDS(fit_lme, here::here("analysis/data/derived_data/fits/lme.Rds"))
-  } else {
-    fit_lme <- readRDS(here::here("analysis/data/derived_data/fits/lme.Rds"))
-  }
-  predict_lme <- function(data){
-    force(fit_lme)
-    predict(fit_lme, data, level = 1)
-  }
-  if(optimal_model == "lme"){
-    fitted_model <- function(data){
-      force(predict_lme)
-      predict_lme(data)
-    }
-  }
+predict_agt <- function(data){
+  force(fit_agt)
+  force(agt_formula)
+  predict(fit_agt, model.matrix(agt_formula, data))
 }
-
-if(optimal_model == "composite"){
-  #calculate test errors
-  t_error_agt <- error_func(fitting_data$deaths_averted_standardised, predict_agt(fitting_data))
-  t_error_lme <- error_func(fitting_data$deaths_averted_standardised, predict_lme(fitting_data))
-  fitted_model <- function(data){
-      force(predict_agt)
-      force(predict_lme)
-      force(t_error_agt)
-      force(t_error_lme)
-      lme <- predict_lme(data)
-      agt <- predict_agt(data)
-      #calculate weighted average
-       map_dbl(seq_along(lme),
-        ~weighted.mean(c(agt[.x], lme[.x]), w = 1/c(t_error_agt, t_error_lme)))
-  }
+fitted_model <- function(data){
+  force(predict_agt)
+  predict_agt(data)
 }
 ```
 
 ```{r estimate new deaths averted}
 #keep the same variables + date so its the vaccination period
 prediction_df <- fitting_data %>% 
-  select(iso3c, pop, date, hosp_beds, ICU_beds, income_group, who_region, dominant_vaccine) %>% 
+  select(iso3c, pop, income_group, who_region, dominant_vaccine,
+         all_of(names(present_vaccines)), contains("original")) %>% 
+  select(!contains("deaths")) %>% 
+  rename_with(.cols = contains("original"), .fn = function(x) stringr::str_replace(x, "_original", "")) %>% 
+  select(!start_date_epidemic) %>% 
   unique() %>% 
   left_join(
     combined_df %>% 
-      select(iso3c, economist_excess_deaths, who_excess_deaths, date),
-    by = c("iso3c", "date")
+      select(iso3c, who_excess_deaths, date) %>% 
+      left_join(
+        vaccination_start_dates,
+        by = "iso3c"
+      ) %>% 
+      #format to bring in line with values used in the economist fitting
+      mutate(who_excess_deaths = if_else(
+        who_excess_deaths < 0,
+        0,
+        who_excess_deaths
+      )) %>% 
+      #split into pre/post vaccination deaths
+      group_by(iso3c) %>% 
+      summarise(
+        deaths_non_vaccine = sum(who_excess_deaths[date < start_date_vaccination]),
+        deaths_vaccine = sum(who_excess_deaths[date >= start_date_vaccination])
+      ),
+    by = c("iso3c")
+  ) %>% #add epidemic start dates
+  left_join(
+    combined_df %>% 
+      select(iso3c, who_excess_deaths, date) %>% 
+      group_by(iso3c) %>% 
+      arrange(date) %>% 
+      filter(who_excess_deaths > 0) %>% 
+      summarise(
+        start_date_epidemic = as.numeric(min(date))
+      ),
+    by = c("iso3c")
   ) %>% 
-  group_by(iso3c) %>% 
-  arrange(date) %>% 
-  mutate(month = seq_along(date)) %>%
   ungroup() %>% 
+  #drop countries with no predicted epidemic
+  filter(
+    !is.na(start_date_epidemic)
+  ) %>% 
   mutate(
     #set per capita
-    economist_excess_deaths = economist_excess_deaths/pop,
-    who_excess_deaths = who_excess_deaths/pop,
-    deaths_averted = who_excess_deaths, #temporary
-    deaths = who_excess_deaths
+    deaths_vaccine = deaths_vaccine/pop,
+    deaths_non_vaccine = deaths_non_vaccine/pop,
+    deaths_averted = 1 #temp
   ) %>% 
   #standardise
   standardise_df() %>% 
-  select(!deaths_averted, !deaths_averted_standardised)
+  select(!deaths_averted_original)
+
+countries_no_epidemic <- setdiff(unique(fitting_data$iso3c), prediction_df$iso3c)
 
 #generate predictions
 estimated_deaths_averted <- tibble(
@@ -690,18 +823,93 @@ estimated_deaths_averted <- tibble(
   date = prediction_df$date,
   who = fitted_model(prediction_df) %>% 
   unstandardise_deaths_averted() %>% 
-  `*`(prediction_df$pop),
-  economist_unadjusted = fitted_model(prediction_df %>% 
-                                                       select(!contains("standardised")) %>% 
-                                           mutate(deaths = economist_excess_deaths,
-                                                  deaths_averted = deaths) %>% 
-  #standardise
-  standardise_df() %>% 
-  select(!deaths_averted, !deaths_averted_standardised)) %>% 
-  unstandardise_deaths_averted() %>% 
   `*`(prediction_df$pop)
 )
+```
 
+```{r summarise deaths}
+#reported deaths
+iso3cs <- prediction_df$iso3c
+names(iso3cs) <- iso3cs
+if(params$gather_raw_data){
+  reported_deaths <- map_dfr(
+    iso3cs, .id = "iso3c",
+    function(iso3c){
+      #read model fit from github
+      dir.create(here::here("temp"))
+      exists <- tryCatch(
+      download.file(
+        paste0("https://github.com/mrc-ide/covid-vaccine-impact-orderly/blob/main/data/reported_deaths/model_fits/", iso3c, ".Rds?raw=true"),
+        here::here("temp/fit_reported.rds"),
+        mode = "wb"
+      ), error = function(e){NULL})
+      if(!is.null(exists)){
+        model_fit <- readRDS(
+        here::here("temp/fit_reported.rds")
+      )
+      tibble(
+        `Reported Deaths` = sum(model_fit$pmcmc_results$inputs$data$deaths)
+      )
+      }
+    })
+  saveRDS(reported_deaths, here::here("analysis/data/raw_data/reported_model_deaths.Rds"))
+  unlink(here::here("temp"), recursive = TRUE)
+} else {
+  reported_deaths <- readRDS(here::here("analysis/data/raw_data/reported_model_deaths.Rds"))
+}
+#economist deaths
+if(params$gather_raw_data){
+  economist_deaths <- map_dfr(
+    iso3cs, .id = "iso3c",
+    function(iso3c){
+      #read model fit from github
+      dir.create(here::here("temp"))
+      exists <- tryCatch(
+      download.file(
+        paste0("https://github.com/mrc-ide/covid-vaccine-impact-orderly/blob/main/data/excess_mortality/model_fits/", iso3c, ".Rds?raw=true"),
+        here::here("temp/fit_excess.rds"),
+        mode = "wb"
+      ), error = function(e){NULL})
+      if(!is.null(exists)){
+      model_fit <- readRDS(
+        here::here("temp/fit_excess.rds")
+      )
+      tibble(
+        `Economist Deaths` = sum(model_fit$pmcmc_results$inputs$data$deaths)
+      )
+      }
+    })
+  saveRDS(economist_deaths, here::here("analysis/data/raw_data/economst_model_deaths.Rds"))
+  unlink(here::here("temp"), recursive = TRUE)
+} else {
+  economist_deaths <- readRDS(here::here("analysis/data/raw_data/economst_model_deaths.Rds"))
+}
+#who deaths
+who_deaths <- combined_df %>% 
+  select(iso3c, who_excess_deaths, date) %>%
+  filter(iso3c %in% prediction_df$iso3c) %>% 
+  #format to bring in line with other values used
+  mutate(who_excess_deaths = if_else(
+    who_excess_deaths < 0,
+    0,
+    who_excess_deaths
+  )) %>% 
+  group_by(iso3c) %>% 
+  summarise(
+    `WHO Deaths` = sum(who_excess_deaths)
+  )
+
+deaths <- full_join(
+  reported_deaths, economist_deaths, by = "iso3c"
+) %>% 
+  full_join(
+    who_deaths, by = "iso3c"
+  )
+
+rm(reported_deaths, economist_deaths, who_deaths, iso3cs)
+```
+
+```{r produce summary tables}
 #format economist and reported estimates
 fitted_deaths_averted <- deaths_averted %>% 
       select(!deaths) %>% 
@@ -732,30 +940,116 @@ write_csv(
   estimated_deaths_averted %>% 
     group_by(iso3c) %>% 
     summarise(
-      `WHO (Predictive Model)` = format_number(sum(who)),
-      `Unadjusted Economist (Predictive Model)` = format_number(sum(economist_unadjusted))
+      `WHO Deaths Averted (Predictive Model)` = format_number(sum(who))
     ) %>% 
     full_join(
       fitted_deaths_averted %>% 
         group_by(iso3c) %>% 
         summarise(
-          `Economist (Disease Model)` = format_model_est(economist),
-          `Reported Deaths (Disease Model)` = format_model_est(reported)
+          `Economist Deaths Averted (Disease Model)` = format_model_est(economist),
+          `Reported Deaths Deaths Averted (Disease Model)` = format_model_est(reported)
         ),
       by = "iso3c"
+    ) %>% 
+    full_join(deaths %>% 
+                mutate(across(!iso3c, ~format_number(.x))), by = "iso3c") %>% 
+    mutate(Country = countrycode::countrycode(iso3c, "iso3c", "country.name")) %>% 
+    select(Country, `WHO Deaths Averted (Predictive Model)`, `WHO Deaths`,
+           `Reported Deaths Deaths Averted (Disease Model)`, `Reported Deaths`,
+           `Economist Deaths Averted (Disease Model)`, `Economist Deaths`) %>% 
+    #final formatting
+    mutate(
+      `Reported Deaths Deaths Averted (Disease Model)` = if_else(
+        is.na(`Reported Deaths`) | str_detect(`Reported Deaths`, "NA"),
+        "0 (0, 0)",
+        `Reported Deaths Deaths Averted (Disease Model)`
+      ),
+      `Reported Deaths` = if_else(
+        is.na(`Reported Deaths`) | str_detect(`Reported Deaths`, "NA"),
+        "0",
+        `Reported Deaths`
+      ),
+      `Economist Deaths Averted (Disease Model)` = if_else(
+        is.na(`Economist Deaths`) | str_detect(`Economist Deaths`, "NA"),
+        "0 (0, 0)",
+        `Economist Deaths Averted (Disease Model)`
+      ),
+      `Economist Deaths` = if_else(
+        is.na(`Economist Deaths`) | str_detect(`Economist Deaths`, "NA"),
+        "0",
+        `Economist Deaths`
+      ),
+      `WHO Deaths Averted (Predictive Model)` = if_else(
+        is.na(`WHO Deaths`) | str_detect(`WHO Deaths`, "NA"),
+        "0",
+        `WHO Deaths Averted (Predictive Model)`
+      ),
+      `WHO Deaths` = if_else(
+        is.na(`WHO Deaths`) | str_detect(`WHO Deaths`, "NA"),
+        "0",
+        `WHO Deaths`
+      )
     ),
   here::here("analysis/data/derived_data/comparison_by_country.csv")
 )
 
 #create global, regional, and income group table
-summarise_predicted_by <- function(grouping){
-  temp <- estimated_deaths_averted %>% 
+summarise_predicted_by <- function(grouping, per = "total"){
+  temp <- estimated_deaths_averted  %>% 
+    mutate(income_group = squire.page::get_income_group(iso3c),
+           who_region = squire.page::get_WHO_region(iso3c)) %>% 
+    group_by_at(grouping)
+  if(per == "total"){
+    temp <- temp %>% 
+      summarise(
+      `WHO (Predictive Model)` = format_number(sum(who))
+    )
+  } else if(per == "capita"){
+    temp <- temp %>% 
+      left_join(
+        fitting_data %>% 
+          select(iso3c, pop),
+        by = "iso3c"
+      ) %>% 
+      summarise(
+        `Per 10k People` = signif((sum(who)/sum(pop) * 10000), digits = 4)
+      )
+  } else if(per == "vaccine"){
+    temp <- temp %>% 
+      left_join(
+        fitting_data %>% 
+          transmute(
+            iso3c = iso3c,
+            doses = second_doses_original*pop + first_doses_original*pop
+          ),
+        by = "iso3c"
+      ) %>% 
+      summarise(
+        `Per 10k Vaccines` = signif((sum(who)/sum(doses) * 10000), digits = 4)
+      )
+  }
+  if(!is.null(grouping)){
+    temp %>% 
+      mutate(
+        across(all_of(grouping),
+               ~paste0("  ", as.character(.x)),
+               .names = " ")
+      ) %>% 
+      select(!all_of(grouping))
+  } else {
+    temp %>% 
+      mutate(
+        ` ` = "Worldwide"
+      )
+  }
+}
+summarise_deaths_by <- function(grouping){
+  temp <- deaths %>% 
     mutate(income_group = squire.page::get_income_group(iso3c),
            who_region = squire.page::get_WHO_region(iso3c)) %>% 
     group_by_at(grouping) %>% 
     summarise(
-      `WHO (Predictive Model)` = format_number(sum(who)),
-      `Unadjusted Economist (Predictive Model)` = format_number(sum(economist_unadjusted))
+      across(c(`Reported Deaths`, `Economist Deaths`, `WHO Deaths`), ~format_number(sum(.x, na.rm = TRUE)))
     )
   if(!is.null(grouping)){
     temp %>% 
@@ -825,10 +1119,18 @@ summary_table <-
     summarise_fitted_by(NULL),
     by = " "
   ) %>% 
+  full_join(
+    summarise_deaths_by(NULL),
+    by = " "
+  ) %>% 
   add_row(` ` = "Income Group:") %>% 
   rbind(summarise_predicted_by("income_group") %>% 
   full_join(
     summarise_fitted_by("income_group"),
+    by = " "
+  ) %>% 
+  full_join(
+    summarise_deaths_by("income_group"),
     by = " "
   )) %>% 
   add_row(` ` = "WHO Region:") %>% 
@@ -836,11 +1138,52 @@ summary_table <-
   full_join(
     summarise_fitted_by("who_region"),
     by = " "
+  ) %>% 
+  full_join(
+    summarise_deaths_by("who_region"),
+    by = " "
   )) %>% 
-  relocate(` `)
+  select(` `, `WHO (Predictive Model)`, `WHO Deaths`, `Economist (Disease Model)`, `Economist Deaths`, `Reported Deaths (Disease Model)`, `Reported Deaths`)
 #save
 write_csv(summary_table, here::here("analysis/data/derived_data/global_summary.csv"))
 ```
+
+```{r deaths averted per capita and vaccine}
+measure_table <- 
+  summarise_predicted_by(NULL) %>% 
+          full_join(
+            summarise_predicted_by(NULL, "capita"),
+            by = " "
+          ) %>% 
+          full_join(
+            summarise_predicted_by(NULL, "vaccine"),
+            by = " "
+          ) %>% 
+  add_row(` ` = "Income Group:") %>% 
+  rbind(summarise_predicted_by("income_group") %>% 
+          full_join(
+            summarise_predicted_by("income_group", "capita"),
+            by = " "
+          ) %>% 
+          full_join(
+            summarise_predicted_by("income_group", "vaccine"),
+            by = " "
+          )) %>% 
+  add_row(` ` = "WHO Region:") %>% 
+  rbind(summarise_predicted_by("who_region") %>% 
+          full_join(
+            summarise_predicted_by("who_region", "capita"),
+            by = " "
+          ) %>% 
+          full_join(
+            summarise_predicted_by("who_region", "vaccine"),
+            by = " "
+          )) %>% 
+  rename(`Total` = `WHO (Predictive Model)`) %>% 
+  relocate(` `)
+write_csv(measure_table, here::here("analysis/data/derived_data/global_summary_by_measure.csv"))
+```
+
 
 Ideally we would refit our models to the WHO estimates and compare those results
 to the original output. However, the monthly format of the WHO outputs makes them
@@ -848,10 +1191,25 @@ unsuitable for use in our MCMC method. Instead we will estimate the deaths
 averted from the WHO mortality by exploring the relationship deaths averted and
 the Economist values.
 
+We model this relationship by fitting a boosted regression tree @lunde2020agtboost
+to predict total deaths averted from January 2020 to the 12th of December 2021.
+Our chosen features are: total deaths pre vaccination, total deaths once vaccinations
+have begun, the start times of the vaccination campaign, and the total numbers
+of vaccine doses given by dose. We also include the features to represent the 
+varying model inputs used in the vaccine impact paper: dominant vaccine and 
+vaccines reported to be used (summarised into types as in the vaccine impact paper)
+to represent vaccine efficacy, hospital and ICU bed capacity, income group to
+capture effects of mobility, epidemic start date (estimated for WHO estimates as
+the first month with positive excess morality), date of introduction for the 
+Delta and Omicron variants.
 
-# Conclusion
+```{r, fig.cap = "Global comparison of estimated WHO deaths averted to deaths averted generated by model fits to reported COVID deaths and process Economist Excess Mortality Estimates."}
+knitr::kable(summary_table)
+```
 
-\newpage
+```{r, fig.cap = "Global esimates of deaths averted by vaccinations by WB income group or WHO region, total, or per 10k people or vaccinations (in the primary series)."}
+knitr::kable(measure_table)
+```
 
 # References 
 
@@ -866,6 +1224,7 @@ the Economist values.
 <!-- Add something about renv output? -->
 
 This report was generated on `r Sys.time()` using the following computational environment and dependencies: 
+Code is available [here](https://github.com/GBarnsley/excesscompare).
 
 ```{r colophon, cache = FALSE}
 # which R packages and versions?

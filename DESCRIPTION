@@ -2,7 +2,7 @@ Package: excesscompare
 Title: Comparison of the WHO and Economist COVID-19 Excess Mortality Estimates
 Version: 0.0.0.9000
 Authors@R:
-    person("Gregory", "Barnsley", "g.barnsley@imperial.ac.uk", role = c("aut", "cre"))
+    person("Gregory", "Barnsley", email = "g.barnsley@imperial.ac.uk", role = c("aut", "cre"))
 Description: Compare the estimated excess moratlity between the WHO and the
   Economist. Will potentially compare others. This comparison will allow us
   to esimate vaccine impact based upon the WHO estimates. 
@@ -20,8 +20,22 @@ Imports: bookdown,
     lubridate,
     squire,
     countrycode,
-    nlme,
     ggpubr,
-    agtboost
+    agtboost,
+    base,
+    dplyr,
+    furrr,
+    future,
+    knitr,
+    nimue,
+    squire.page,
+    rmarkdown,
+    rvest,
+    scales,
+    stringr,
+    tools,
+    urltools,
+    utils,
+    xml2
 Suggests: devtools,
     git2r
