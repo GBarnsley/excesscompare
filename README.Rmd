@@ -45,7 +45,7 @@ You can download the compendium as a zip from from this URL:
 * run `devtools::install()` to ensure you have the packages this analysis depends on (also listed in the
 [DESCRIPTION](/DESCRIPTION) file).
 * ensure that packages are at the correct versions with `renv::restore()`.
-* finally, open `analysis/report/report.Rmd` and knit to produce the `report.docx`, or run `rmarkdown::render("analysis/report/report.Rmd", params = list(gather_raw_data = FALSE, parallel_ = FALSE, generate_model_fits = FALSE))` in the R console
+* finally, open `analysis/report/report.Rmd` and knit to produce the `report.docx`, or run `rmarkdown::render("analysis/report/report.Rmd", params = list(gather_raw_data = FALSE, parallel_ = TRUE, generate_model_fits = FALSE))` in the R console
 
 ### Licenses
 

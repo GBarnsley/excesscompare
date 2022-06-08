@@ -13,7 +13,7 @@ output:
 bibliography: references.bib
 params:
   gather_raw_data: FALSE
-  parallel_: FALSE
+  parallel_: TRUE
   generate_model_fits: FALSE
 ---
 
@@ -47,7 +47,7 @@ library(readxl)
 econ_raw_file_path <- file.path(here::here(), "analysis/data/raw_data/economist_raw.csv")
 if(params$gather_raw_data){
   #save to the raw_data_folder
-  download.file("https://raw.githubusercontent.com/TheEconomist/covid-19-the-economist-global-excess-deaths-model/baca4ff7f77b031de8e1b0f5f73eaf1ca8e50998/output-data/export_country.csv", econ_raw_file_path)
+  download.file("https://raw.githubusercontent.com/TheEconomist/covid-19-the-economist-global-excess-deaths-model/5fa640a2cc53378b10070e2be505e80d8448ee39/output-data/export_country.csv", econ_raw_file_path)
 }
 #load raw version from data_raw
 econ_df <- read_csv(econ_raw_file_path)
@@ -628,13 +628,13 @@ error_func <- function(target, prediction){
 tuning_parameters <- expand_grid(
   include_iso3c = FALSE,
   learning_rate = c(0.1, 0.01, 0.001),
-  WHO = c(TRUE, FALSE),
+  WHO = FALSE,#c(TRUE, FALSE),
   daily_deaths = c(TRUE, FALSE)
 ) %>% transpose()
 
 generate_formula <- function(include_iso3c, WHO){
   temp_df <- fitting_data[1:2,]
-  remove_vars <- c("pop", "replicate", "type")
+  remove_vars <- c("pop", "replicate", "type", "income_group")
   if(!include_iso3c){
     remove_vars <- c(remove_vars, "iso3c")
   }
@@ -647,7 +647,14 @@ generate_formula <- function(include_iso3c, WHO){
                relocate(deaths_averted))
 }
 
-errors <- map_func(seq_len(N_valid), function(test_index){
+progressr::handlers(global = TRUE)
+
+errors <- local(
+  {
+    p <- progressr::progressor(steps = N_valid, enable = TRUE)
+
+  map_func(seq_len(N_valid), function(test_index){
+  
   train <- partioned_data %>% filter(group == test_index)
   test <- partioned_data %>% filter(group != test_index & iso3c %in% train$iso3c) #remove countries we've not trained on
   
@@ -668,13 +675,13 @@ errors <- map_func(seq_len(N_valid), function(test_index){
     walk(
       seq_along(tuning_parameters), ~agtboost::gbt.save(
         fits[[.x]],
-        here::here(paste0("analysis/data/derived_data/fits/agt_", paste0(names(tuning_parameters[[.x]]), collapse = "_"), ".agtb"))
+        here::here(paste0("analysis/data/derived_data/fits/agt_", paste0(test_index, "_", paste0(unlist(tuning_parameters[[.x]]), collapse = "_")), ".agtb"))
         )
     )
   } else {
     fits <- map(
       seq_along(tuning_parameters), ~agtboost::gbt.load(
-        here::here(paste0("analysis/data/derived_data/fits/agt_", paste0(names(tuning_parameters[[.x]]), collapse = "_"), ".agtb"))
+        here::here(paste0("analysis/data/derived_data/fits/agt_", paste0(test_index, "_", paste0(unlist(tuning_parameters[[.x]]), collapse = "_")), ".agtb"))
         )
     )
   }
@@ -712,9 +719,14 @@ errors <- map_func(seq_len(N_valid), function(test_index){
     ggpubr::theme_pubr() + 
     facet_wrap(vars(parameters)) +
     labs(x= "Predicted", y = "Truth", colour = "Type:", title = paste0("Validation Set: ", test_index))
+  #update progressr so it knows that this fold is finished
+  p()
   #calculate error
   list(plot = plot, errors = error_agt)
 })
+
+  }
+)
 
 rm(partioned_data)
 
