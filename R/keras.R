@@ -44,14 +44,6 @@ write_model <- function(input_parameters, input_deaths,
 #function to fit a keras model
 fit_keras_model <- function(model, x, y){
   #copy model
-  output_model <- model %>%
-    clone_model() %>%
-    #compile
-    compile(
-      loss = "mean_squared_error",
-      optimizer = "adam",
-      metrics = "mse"
-    )
   valid_model <- model %>%
     clone_model() %>%
     #compile
@@ -84,7 +76,7 @@ fit_keras_model <- function(model, x, y){
     filter(value == min(value)) %>%
     pull(epoch)
   #fit the output model and then return it
-  silent <- output_model %>%
+  silent <- model %>%
     fit(
       x = x,
       y = y,
@@ -94,7 +86,7 @@ fit_keras_model <- function(model, x, y){
       verbose = 0,
       shuffle = FALSE
     )
-  output_model
+  model
 }
 
 #function to train on a set of folds and produce predictions
@@ -110,7 +102,15 @@ cv_for_super_learner <- function(fold, folds, deaths_array, parameter_matrix, ta
   test_deaths_averted <- target_deaths_averted[test_ids]
   #now train each model
   trained_models <- map(candidates, function(candidate){
-    fit_keras_model(candidate, list(train_parameter_matrix, train_deaths_array), train_deaths_averted)
+    candidate_clone <-  candidate %>%
+      clone_model() %>%
+      #compile
+      compile(
+        loss = "mean_squared_error",
+        optimizer = "adam",
+        metrics = "mse"
+      )
+    fit_keras_model(candidate_clone, list(train_parameter_matrix, train_deaths_array), train_deaths_averted)
   })
   names(trained_models) <- paste0("candidate_", seq_along(trained_models))
   #generate predictions on the test data

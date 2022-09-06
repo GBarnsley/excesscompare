@@ -351,101 +351,9 @@ deaths_averted <- readRDS(here::here("analysis/data/raw_data/excess_mortality.Rd
 ```
 
 ```{r get vaccine data}
-#Raw data unavailable from Unicef dashboard https://www.unicef.org/supply/covid-19-vaccine-market-dashboard
-simplify_vaccines <- function(x){
-  case_when(
-      x %in% c("Pfizer/BioNTech", "Moderna") ~ "mRNA",
-      x %in% c("Abdala", "Novavax", "ZF2001", "Soberana02", "Soberana Plus", "Razi Cov Pars", "SpikoGen", "EpiVacCorona", "Medigen", "Abdala (Subunit like novavax)", "Anhui ZL (Recombinant Platform)") ~ "Subunit",
-      x %in% c("Oxford/AstraZeneca", "Sputnik V", "Sputnik Light", "CanSino", "Covishield") ~ "Adenovirus",
-      x %in% c("Sinopharm/Wuhan", "Sinopharm/Beijing", "Sinovac", "Covaxin", "COVIran Barekat", "FAKHRAVAC", "QazVac", "Turkovac", "KoviVac/Chumakov") ~ "Whole Virus",
-      TRUE ~ x,
-    )
-}
-dominant_vaccines <- readRDS(here::here("analysis/data/raw_data/dominant_vaccines.Rds"))%>% 
-  transmute(
-    iso3c = countrycode::countrycode(country, "country.name", "iso3c"),
-    #reduce to types
-    dominant_vaccine = simplify_vaccines(dominant)
-  )
-if(params$gather_raw_data){
-  url <- xml2::read_html("https://github.com/owid/covid-19-data/tree/master/public/data/vaccinations/country_data")
-  ctries <- rvest::html_text(rvest::html_nodes(url, ".js-navigation-open.Link--primary"))
-  links <- paste0("https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/vaccinations/country_data/", ctries)
-  links <- urltools::url_encode(links)
-  dat <- lapply(links, read.csv)
-  present_vaccines <- data.frame("country" = gsub(".csv","", ctries, fixed = TRUE),
-                 "vaccines" = unlist(lapply(dat, function(x){tail(x$vaccine,1)}))) %>%
-    mutate(
-      country = case_when(
-        country %in% c("England", "Northern Ireland", "Scotland", "Wales") ~ "United Kingdom",
-        country == "Timor" ~ "Timor Leste",
-        TRUE ~ country
-      ),
-      country = if_else(
-        country == "Kosovo",
-        "XKX",
-        countrycode::countrycode(country, origin = "country.name", destination = "iso3c")
-      )
-    ) %>%
-    filter(country %in% dominant_vaccines$iso3c) %>%
-    rename(iso3c = country) %>%
-    unique() %>%
-    group_by(iso3c) %>%
-    summarise(
-      vaccines = paste0(vaccines, collapse = ", ")
-    )
-  saveRDS(present_vaccines, here::here("analysis/data/raw_data/owid_vaccine_usage.Rds"))
-  rm(url, ctries, links, dat)
-} else {
-  present_vaccines <- readRDS(here::here("analysis/data/raw_data/owid_vaccine_usage.Rds"))
-}
-#add missing values
-present_vaccines <- present_vaccines %>%
-  rbind(
-    tibble(
-      iso3c = c("GUF", "GLP", "MTQ", "MYT", "REU"),
-      vaccines = present_vaccines %>%
-        filter(iso3c == "FRA") %>%
-        pull(vaccines)
-    )
-  ) %>%
-  rbind(
-    vaccines = present_vaccines %>%
-      filter(iso3c == "GBR") %>%
-      mutate(iso3c = "CHI")
-  ) %>%
-  rbind(
-    tibble(
-      iso3c = c("GUM", "FSM", "PRI", "VIR"),
-      vaccines = c("Pfizer/BioNTech, Moderna, Johnson&Johnson",
-                   "Moderna, Johnson&Johnson",
-                   "Pfizer/BioNTech, Moderna, Johnson&Johnson",
-                   "Pfizer/BioNTech, Moderna")
-    )
-  )
-
-#split into distinct categories
-vaccine_types <- unique(unlist(str_split(unique(present_vaccines$vaccines), ", ")))
-#simplify to types
-vaccine_cat <- simplify_vaccines(vaccine_types)
-unique_cat <- unique(vaccine_cat)
-names(unique_cat) <- unique_cat
-#reduce
-present_vaccines <- present_vaccines %>%
-  select(!vaccines) %>%
-  cbind(
-    map_dfc(unique_cat, function(category){
-      reduce(vaccine_types[vaccine_cat == category],
-             function(curr, new_vaccine_type){
-               curr + str_detect(present_vaccines$vaccines, new_vaccine_type) > 0
-             },
-             .init = FALSE
-      )
-    })
-  )
-rm(vaccine_types, vaccine_cat, unique_cat)
-
-#Also load when variant timings start, no source available generated when model
+iso3cs <- unique(combined_df$iso3c)
+names(iso3cs) <- iso3cs
+#Load when variant timings start, no source available generated when model
 #fitted to covariants data
 variant_timings <- readRDS(here::here("analysis/data/raw_data/variant_characteristics.rds")) %>% 
   map_dfr(function(country) map_dfc(country, ~.x$start_date), .id = "iso3c") %>% 
@@ -475,10 +383,89 @@ vaccination_start_dates <- deaths_averted %>%
 vaccinations_total <- readRDS(here::here("analysis/data/raw_data/vacc_inputs.rds")) %>% 
   map_dfr(~tibble(first_doses = sum(.x$max_vaccine), second_doses = tail(.x$dose_ratio, 1)*sum(.x$max_vaccine)), .id = "iso3c")
 
+
+#used to calculate the baseline IFR for the demographic
 age_baseline_ifr <- nimue:::default_probs()$prob_hosp * 
         (nimue:::default_probs()$prob_severe * nimue:::default_probs()$prob_severe_death_treatment + 
         (1-nimue:::default_probs()$prob_severe) * nimue:::default_probs()$prob_non_severe_death_treatment)
-##used to calculate the baseline IFR for the demographic
+
+#vaccine efficacies per replicate
+if(params$gather_raw_data){
+  map(iso3cs, function(iso3c){
+    dir.create(here::here("temp"))
+    exists <- tryCatch(
+    download.file(
+        paste0("https://github.com/mrc-ide/covid-vaccine-impact-orderly/blob/main/data/excess_mortality/model_fits/", 
+           iso3c, ".Rds?raw=true"), here::here(paste0("temp/temp.Rds")),
+        mode = "wb"
+      ),
+    error = function(e){NULL})
+    if(!is.null(exists)){
+      fit <- readRDS(here::here("temp/temp.Rds"))
+      unlink(here::here("temp"), force = TRUE, recursive = TRUE)
+      #get ve per replicate
+      list(
+        ve = fit$replicate_parameters$ves,
+        fit$interventions$vaccine_efficacies
+      )
+    } else {
+      NULL
+    }
+  }) %>% 
+    saveRDS(here::here("analysis/data/raw_data/excess_mortality_vpar.Rds"))
+  map(iso3cs, function(iso3c){
+    dir.create(here::here("temp"))
+    exists <- tryCatch(
+    download.file(
+        paste0("https://github.com/mrc-ide/covid-vaccine-impact-orderly/blob/main/data/reported_deaths/model_fits/", 
+           iso3c, ".Rds?raw=true"), here::here(paste0("temp/temp.Rds")),
+        mode = "wb"
+      ),
+    error = function(e){NULL})
+    if(!is.null(exists)){
+      fit <- readRDS(here::here("temp/temp.Rds"))
+      unlink(here::here("temp"), force = TRUE, recursive = TRUE)
+      #get ve per replicate
+      list(
+        ve = fit$replicate_parameters$ves,
+        fit$interventions$vaccine_efficacies
+      )
+    } else {
+      NULL
+    }
+  }) %>% 
+    saveRDS(here::here("analysis/data/raw_data/reported_deaths_vpar.Rds"))
+}
+vaccine_efficacies <- readRDS(here::here("analysis/data/raw_data/excess_mortality_vpar.Rds")) %>% 
+  map_dfr(calculate_ve_map_func, .id = "iso3c") %>% 
+  mutate(type = "excess") %>% 
+  rbind(
+    readRDS(here::here("analysis/data/raw_data/reported_deaths_vpar.Rds")) %>% 
+    map_dfr(calculate_ve_map_func, .id = "iso3c") %>% 
+    mutate(type = "reported")
+  ) %>% 
+  #apply breakthrough scaling
+  mutate(
+    replicate = as.numeric(replicate),
+    ve_d_low = (ve_d_low - ve_i_low)/(1 - ve_i_low),
+    ve_d_high = (ve_d_high - ve_i_high)/(1 - ve_i_high),
+    ve_d_low_d = (ve_d_low_d - ve_i_low_d)/(1 - ve_i_low_d),
+    ve_d_high_d = (ve_d_high_d - ve_i_high_d)/(1 - ve_i_high_d)
+  )
+
+#mixing matrix
+mixing_matrices <- map(iso3cs, ~squire::get_mixing_matrix(iso3c = .x))
+#convert into a tibble
+mixing_matrices <- map_dfr(mixing_matrices, function(x){ 
+  row <- as.numeric(x)
+  names(row) <- paste0("mixing_matrix_", seq_along(row))
+  row
+}, .id = "iso3c")
+
+#ISSUE: SOME OF THESE SHOULD GO IN A MATRICES!
+#not sure mixing matrices belong, + make an effective protection matrix by variant/dose?
+
+rm(iso3cs)
 ```
 
 ```{r setup deaths array}
@@ -522,7 +509,8 @@ death_means <- deaths_array %>%
     mean = mean(deaths_per_capita),
     var = var(deaths_per_capita),
     .groups = "drop"
-  ) %>%
+  ) 
+deaths_array <- deaths_array %>%
   left_join(death_means, by = c("vaccinations", "variant")) %>%
   mutate(
     deaths_per_capita_standardised = (deaths_per_capita - mean)/sqrt(var)
@@ -563,7 +551,9 @@ parameter_data <- deaths_averted %>%
   ) %>%
   ungroup() %>%
   #mixing matrix
+  left_join(mixing_matrices, by = "iso3c") %>% 
   #add vaccine efficacy, for each replicate for each variant
+  left_join(vaccine_efficacies, by = c("iso3c", "replicate", "type")) %>% 
   #epidemic start date
   left_join(epidemic_start_dates, by = c("iso3c", "replicate", "type")) %>%
   #vaccination counts
@@ -576,8 +566,7 @@ parameter_data <- deaths_averted %>%
   ungroup() %>%
   select(!c(iso3c, replicate, type, pop, first_doses, second_doses))
 #standardise some variables
-vars_to_standardise <- c("baseline_ifr", "hosp_beds", "ICU_beds", "start_date_epidemic",
-                         "first_doses_per_capita", "second_doses_per_capita")
+vars_to_standardise <- parameter_data %>% select(is.numeric) %>% names()
 parameter_means <- parameter_data %>%
   summarise(
     across(all_of(vars_to_standardise),
@@ -722,6 +711,7 @@ if(params$generate_model_fits){
       optimizer = "adam",
       metrics = "mse"
     )
+  unlink(here::here("analysis/data/derived_data/fit"), recursive = TRUE)
   save_model_tf(super_learner, here::here("analysis/data/derived_data/fit"))
 } else {
   super_learner <- load_model_tf(here::here("analysis/data/derived_data/fit"))
